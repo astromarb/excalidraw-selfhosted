@@ -1,0 +1,56 @@
+services:
+  # Single entrypoint for the whole stack. Everything (app, websocket relay,
+  # storage API) is served from one port so `tailscale serve` only needs to
+  # proxy one backend.
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-8080}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - room
+      - storage
+
+  # Excalidraw frontend with the HTTP-storage patch (Firebase swapped out).
+  # alswl's fork tracks upstream releases; the env vars below are substituted
+  # into the built bundle at container start.
+  frontend:
+    image: alswl/excalidraw:v0.18.1-fork-b2
+    restart: unless-stopped
+    environment:
+      - VITE_APP_BACKEND_V2_GET_URL=${PUBLIC_ORIGIN}/api/v2/scenes/
+      - VITE_APP_BACKEND_V2_POST_URL=${PUBLIC_ORIGIN}/api/v2/scenes/
+      - VITE_APP_WS_SERVER_URL=${PUBLIC_ORIGIN}
+      - VITE_APP_STORAGE_BACKEND=http
+      - VITE_APP_HTTP_STORAGE_BACKEND_URL=${PUBLIC_ORIGIN}/api/v2
+      - VITE_APP_FIREBASE_CONFIG={}
+      - VITE_APP_LIBRARY_URL=https://libraries.excalidraw.com
+      - VITE_APP_LIBRARY_BACKEND=https://us-central1-excalidraw-room-persistence.cloudfunctions.net/libraries
+      - VITE_APP_DISABLE_TRACKING=yes
+
+  # Official websocket relay for live collaboration (socket.io).
+  room:
+    image: excalidraw/excalidraw-room:latest
+    restart: unless-stopped
+
+  # Persists shared scenes, shareable links, and pasted images into Redis.
+  storage:
+    image: alswl/excalidraw-storage-backend:v2023.11.11
+    restart: unless-stopped
+    environment:
+      - PORT=8080
+      - GLOBAL_PREFIX=/api/v2
+      - STORAGE_URI=redis://redis:6379
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
