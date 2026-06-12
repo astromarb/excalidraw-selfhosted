@@ -1,0 +1,1167 @@
+diff --git a/.dockerignore b/.dockerignore
+index 6472839..7b4ae8d 100644
+--- a/.dockerignore
++++ b/.dockerignore
+@@ -11,6 +11,12 @@
+ !scripts/
+ !tsconfig.json
+ !yarn.lock
++!index.html
++!index.tsx
++!vite.config.ts
++!vitest.config.ts
++!excalidraw-app
++!launcher.py
+ 
+ # keep (sub)sub directories at the end to exclude from explicit included
+ # e.g. ./packages/excalidraw/{dist,node_modules}
+diff --git a/.env.development b/.env.development
+index 5f69de1..2ec1f8a 100644
+--- a/.env.development
++++ b/.env.development
+@@ -1,5 +1,7 @@
+-VITE_APP_BACKEND_V2_GET_URL=https://json-dev.excalidraw.com/api/v2/
+-VITE_APP_BACKEND_V2_POST_URL=https://json-dev.excalidraw.com/api/v2/post/
++# VITE_APP_BACKEND_V2_GET_URL=https://json-dev.excalidraw.com/api/v2/
++# VITE_APP_BACKEND_V2_POST_URL=https://json-dev.excalidraw.com/api/v2/post/
++VITE_APP_BACKEND_V2_GET_URL=http://localhost:8080/api/v2/scenes/
++VITE_APP_BACKEND_V2_POST_URL=http://localhost:8080/api/v2/scenes/
+ 
+ VITE_APP_LIBRARY_URL=https://libraries.excalidraw.com
+ VITE_APP_LIBRARY_BACKEND=https://us-central1-excalidraw-room-persistence.cloudfunctions.net/libraries
+@@ -48,3 +50,7 @@ UNWEjuqNMi/lwAErS9fFa2oJlWyT8U7zzv/5kQREkxZI6y9v0AF3qcbsy2731FnD
+ s9ChJvOUW9toIab2gsIdrKW8ZNpu084ZFVKb6LNjvIXI1Se4oMTHeszXzNptzlot
+ kdxxjOoaQMAyfljFSot1F1FlU6MQlag7UnFGvFjRHN1JI5q4K+n3a67DX+TMyRqS
+ HQIDAQAB'
++
++# alswl/excalidraw-collbration
++VITE_APP_STORAGE_BACKEND=firebase
++VITE_APP_HTTP_STORAGE_BACKEND_URL=http://localhost:3001/api/v2
+diff --git a/dynamic-env.Dockerfile b/dynamic-env.Dockerfile
+new file mode 100644
+index 0000000..6cadd1b
+--- /dev/null
++++ b/dynamic-env.Dockerfile
+@@ -0,0 +1,63 @@
++FROM node:24 AS build
++
++ARG CHINA_MIRROR=false
++
++# enable china mirror
++RUN if [[ "$CHINA_MIRROR" = "true" ]] ; then \
++    echo "Enable China Alpine Mirror" && \
++    sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories; \
++    fi
++
++RUN if [[ "$CHINA_MIRROR" = "true" ]] ; then \
++    echo "Enable China NPM/Yarn Mirror" && \
++    npm install -g cnpm --registry=https://registry.npmmirror.com; \
++    npm config set registry https://registry.npmmirror.com; \
++    yarn config set registry https://registry.npmmirror.com; \
++    fi
++
++WORKDIR /opt/node_app
++
++COPY . .
++
++# do not ignore optional dependencies:
++# Error: Cannot find module @rollup/rollup-linux-x64-gnu
++RUN yarn --network-timeout 600000
++
++ARG NODE_ENV=production
++
++# disable webpack env loader, use dynamic env
++RUN sed -i 's/import.meta.env/window._env_/g' $(grep 'import.meta.env' -R -l --include "*.ts" --include "*.tsx" --exclude-dir node_modules .)
++RUN yarn build:app:docker
++
++FROM nginx:1.27-alpine
++
++ARG CHINA_MIRROR=false
++
++# enable china mirror
++RUN if [[ "$CHINA_MIRROR" = "true" ]] ; then \
++    echo "Enable China Alpine Mirror" && \
++    sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories; \
++    fi
++
++RUN apk update && apk add sed bash python3
++
++# env from upstream .env.production
++
++ENV VITE_APP_BACKEND_V2_GET_URL=https://json.excalidraw.com/api/v2/
++ENV VITE_APP_BACKEND_V2_POST_URL=https://json.excalidraw.com/api/v2/post/
++ENV VITE_APP_LIBRARY_URL=https://libraries.excalidraw.com
++ENV VITE_APP_LIBRARY_BACKEND=https://us-central1-excalidraw-room-persistence.cloudfunctions.net/libraries
++ENV VITE_APP_PORTAL_URL=https://portal.excalidraw.com
++ENV VITE_APP_PLUS_LP=https://plus.excalidraw.com
++ENV VITE_APP_PLUS_APP=https://app.excalidraw.com
++ENV VITE_APP_WS_SERVER_URL=""
++ENV VITE_APP_FIREBASE_CONFIG='{"apiKey":"AIzaSyAd15pYlMci_xIp9ko6wkEsDzAAA0Dn0RU","authDomain":"excalidraw-room-persistence.firebaseapp.com","databaseURL":"https://excalidraw-room-persistence.firebaseio.com","projectId":"excalidraw-room-persistence","storageBucket":"excalidraw-room-persistence.appspot.com","messagingSenderId":"654800341332","appId":"1:654800341332:web:4a692de832b55bd57ce0c1"}'
++ENV VITE_APP_DISABLE_TRACKING=""
++
++COPY --from=build /opt/node_app/excalidraw-app/build /usr/share/nginx/html
++COPY launcher.py /
++
++HEALTHCHECK CMD wget -q -O /dev/null http://localhost || exit 1
++EXPOSE 80
++
++CMD ["python3", "/launcher.py", "/usr/share/nginx/html"]
+diff --git a/launcher.py b/launcher.py
+new file mode 100644
+index 0000000..5cc9a86
+--- /dev/null
++++ b/launcher.py
+@@ -0,0 +1,196 @@
++# launch excalidraw with dynamic envs
++# author: @alswl
++# usage:
++#
++# 1. modify nodejs process.env in src first
++# gsed -i 's/import.meta.env/window._env_/g' $(grep 'import.meta.env' -R -l src)
++# yarn build:app:docker
++#
++# 2. using env
++# export VITE_APP_BACKEND_V2_GET_URL=http://127.0.0.1:3000/api/v2/
++# export VITE_APP_BACKEND_V2_POST_URL=http://127.0.0.1:3000/api/v2/post/
++# export VITE_APP_LIBRARY_URL=https://libraries.excalidraw.com
++# export VITE_APP_LIBRARY_BACKEND=https://us-central1-excalidraw-room-persistence.cloudfunctions.net/libraries
++# export VITE_APP_PORTAL_URL=https://portal.excalidraw.com
++# export VITE_APP_PLUS_LP=https://plus.excalidraw.com
++# export VITE_APP_PLUS_APP=https://app.excalidraw.com
++
++# export VITE_APP_WS_SERVER_URL="http://127.0.0.1"
++# export VITE_APP_FIREBASE_CONFIG='{"apiKey":"AIzaSyAd15pYlMci_xIp9ko6wkEsDzAAA0Dn0RU","authDomain":"excalidraw-room-persistence.firebaseapp.com","databaseURL":"https://excalidraw-room-persistence.firebaseio.com","projectId":"excalidraw-room-persistence","storageBucket":"excalidraw-room-persistence.appspot.com","messagingSenderId":"654800341332","appId":"1:654800341332:web:4a692de832b55bd57ce0c1"}'
++# export VITE_APP_DISABLE_TRACKING=false
++# export VITE_APP_GOOGLE_ANALYTICS_ID=UA-387204-13
++# export VITE_APP_MATOMO_URL=https://excalidraw.matomo.cloud/
++# export VITE_APP_CDN_MATOMO_TRACKER_URL=//cdn.matomo.cloud/excalidraw.matomo.cloud/matomo.js
++# export VITE_APP_MATOMO_SITE_ID=1
++# export VITE_APP_PLUS_APP=https://app.excalidraw.com
++# alswl's fork version env
++# export VITE_APP_HTTP_STORAGE_BACKEND_URL=http://127.0.0.1:8081/api/v2
++# export VITE_APP_STORAGE_BACKEND=http
++#
++# 3. launch nginx, python launcher.py /usr/share/nginx/html
++
++
++import argparse
++import os
++import re
++import select
++import signal
++import subprocess
++import sys
++
++PATCH_BY = "x-patch-by"
++ALSWL_EXCALIDRAW = "alswl/excalidraw"
++
++default_envs = {
++    "NODE_ENV": "production",
++    "PUBLIC_URL": "",
++    "PKG_NAME": "@excalidraw/excalidraw",
++    "PKG_VERSION": "0.15.0",
++    "ANALYZER": "false",
++    "EXAMPLE": "false",
++}
++
++embed_envs = [
++    # embed
++    "NODE_ENV",
++    "PUBLIC_URL",
++    "PKG_NAME",
++    "PKG_VERSION",
++    "ANALYZER",
++    "EXAMPLE",
++]
++
++
++def get_env_or_default(name: str):
++    v = os.environ.get(name, "")
++    if v == "":
++        v = default_envs.get(name, "")
++    return v
++
++
++def get_envs():
++    envs = [key for key, value in os.environ.items()]
++    vite_apps = [key for key in envs if key.startswith("VITE_APP_")]
++    return vite_apps + embed_envs
++
++
++def gen_dot_env(root: str):
++    # gen .env in root
++
++    with open(os.path.join(root, ".env"), "w") as f:
++        for name in get_envs():
++            val = get_env_or_default(name)
++            f.write(f"{name}={val}\n")
++
++
++def gen_env_js(root: str):
++    code = "window._env_ = {"
++    for name in get_envs():
++        val = get_env_or_default(name)
++        code += f"{name}: '{val}',"
++    code += "}"
++
++    with open(os.path.join(root, "env.js"), "w") as f:
++        f.write(code)
++    return code
++
++
++def patch_index_html(root: str, script: str):
++    path = os.path.join(root, "index.html")
++    with open(path, "r") as f:
++        page = f.read()
++
++    with open(os.path.join(root, "index.origin.html"), "w") as f:
++        f.write(page)
++
++    # check if already patched
++    if f'{PATCH_BY}="{ALSWL_EXCALIDRAW}"' in page:
++        return
++
++    pattern = r'(<script\b[^>]*>)'
++    replacement = f'<script {PATCH_BY}="{ALSWL_EXCALIDRAW}">{script}</script>\n\\1'
++    patched, count = re.subn(pattern, replacement, page, count=1)
++
++    if count == 0:
++        print("script tag not found")
++        sys.exit(1)
++
++    with open(path, "w") as f:
++        f.write(patched)
++
++
++def exec_nginx():
++    cmd = ["nginx", "-g", "daemon off;"]
++    p = subprocess.Popen(
++        cmd,
++        stdout=subprocess.PIPE,
++        stderr=subprocess.PIPE,
++        stdin=subprocess.PIPE,
++        text=True,
++        bufsize=1
++    )
++    try:
++        while True:
++          reads = [p.stdout.fileno(), p.stderr.fileno()]
++          ret = select.select(reads, [], [], 0.1)  # 0.1s timeout
++
++          for fd in ret[0]:
++            if fd == p.stdout.fileno():
++              line = p.stdout.readline()
++              if line:
++                print("STDOUT:", line.strip())
++            elif fd == p.stderr.fileno():
++              line = p.stderr.readline()
++              if line:
++                print("STDERR:", line.strip())
++
++          if p.poll() is not None:
++            break
++    except KeyboardInterrupt:
++        p.send_signal(signal.SIGINT)
++        try:
++          p.wait(timeout=2)
++        except subprocess.TimeoutExpired:
++          p.kill()
++          p.wait()
++
++
++def patch_service_worker(root):
++    # search javascript in root and replace window._env_.PUBLIC_URL to real value
++    # 1. search js file
++    for root, dirs, files in os.walk(root):
++        for file in files:
++            if file.endswith(".js") or file.endswith(".js.map"):
++                path = os.path.join(root, file)
++                with open(path, "r") as f:
++                    code = f.read()
++                code = code.replace(
++                    "window._env_.PUBLIC_URL", f"'{get_env_or_default('PUBLIC_URL')}'"
++                )
++                with open(path, "w") as f:
++                    f.write(code)
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    # add position arg
++    parser.add_argument("root", type=str, help="web root path")
++    args = parser.parse_args()
++
++    root = args.root
++    # check exist index.html
++    if not os.path.exists(os.path.join(root, "index.html")):
++        print("index.html not found")
++        sys.exit(1)
++
++    # gen .env not required in launcher
++    # gen_dot_env(root)
++    code = gen_env_js(root)
++    patch_index_html(root, code)
++    patch_service_worker(root)
++
++    exec_nginx()
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/excalidraw-app/App.tsx b/excalidraw-app/App.tsx
+index 2cb6e77..01813bb 100644
+--- a/excalidraw-app/App.tsx
++++ b/excalidraw-app/App.tsx
+@@ -75,7 +75,7 @@ import {
+ import { updateStaleImageStatuses } from "./data/FileManager";
+ import { newElementWith } from "@excalidraw/excalidraw/element/mutateElement";
+ import { isInitializedImageElement } from "@excalidraw/excalidraw/element/typeChecks";
+-import { loadFilesFromFirebase } from "./data/firebase";
++import { getStorageBackend } from "./data/config";
+ import {
+   LibraryIndexedDBAdapter,
+   LibraryLocalStorageMigrationAdapter,
+@@ -396,7 +396,7 @@ const ExcalidrawWrapper = () => {
+       return;
+     }
+ 
+-    const loadImages = (
++    const loadImages = async (
+       data: ResolutionType<typeof initializeScene>,
+       isInitialLoad = false,
+     ) => {
+@@ -429,18 +429,21 @@ const ExcalidrawWrapper = () => {
+           }, [] as FileId[]) || [];
+ 
+         if (data.isExternalScene) {
+-          loadFilesFromFirebase(
+-            `${FIREBASE_STORAGE_PREFIXES.shareLinkFiles}/${data.id}`,
+-            data.key,
+-            fileIds,
+-          ).then(({ loadedFiles, erroredFiles }) => {
+-            excalidrawAPI.addFiles(loadedFiles);
+-            updateStaleImageStatuses({
+-              excalidrawAPI,
+-              erroredFiles,
+-              elements: excalidrawAPI.getSceneElementsIncludingDeleted(),
++          const storageBackend = await getStorageBackend();
++          storageBackend
++            .loadFilesFromStorageBackend(
++              `${FIREBASE_STORAGE_PREFIXES.shareLinkFiles}/${data.id}`,
++              data.key,
++              fileIds,
++            )
++            .then(({ loadedFiles, erroredFiles }) => {
++              excalidrawAPI.addFiles(loadedFiles);
++              updateStaleImageStatuses({
++                excalidrawAPI,
++                erroredFiles,
++                elements: excalidrawAPI.getSceneElementsIncludingDeleted(),
++              });
+             });
+-          });
+         } else if (isInitialLoad) {
+           if (fileIds.length) {
+             LocalData.fileStorage
+@@ -464,6 +467,7 @@ const ExcalidrawWrapper = () => {
+     };
+ 
+     initializeScene({ collabAPI, excalidrawAPI }).then(async (data) => {
++      await getStorageBackend();
+       loadImages(data, /* isInitialLoad */ true);
+       initialStatePromiseRef.current.promise.resolve(data.scene);
+     });
+diff --git a/excalidraw-app/collab/Collab.tsx b/excalidraw-app/collab/Collab.tsx
+index 9a16e05..3e69124 100644
+--- a/excalidraw-app/collab/Collab.tsx
++++ b/excalidraw-app/collab/Collab.tsx
+@@ -48,13 +48,7 @@ import {
+   getCollaborationLink,
+   getSyncableElements,
+ } from "../data";
+-import {
+-  isSavedToFirebase,
+-  loadFilesFromFirebase,
+-  loadFromFirebase,
+-  saveFilesToFirebase,
+-  saveToFirebase,
+-} from "../data/firebase";
++import { getStorageBackend, storageBackend } from "../data/config";
+ import {
+   importUsernameFromLocalStorage,
+   saveUsernameToLocalStorage,
+@@ -151,7 +145,12 @@ class Collab extends PureComponent<CollabProps, CollabState> {
+           throw new AbortError();
+         }
+ 
+-        return loadFilesFromFirebase(`files/rooms/${roomId}`, roomKey, fileIds);
++        const storageBackend = await getStorageBackend();
++        return storageBackend.loadFilesFromStorageBackend(
++          `files/rooms/${roomId}`,
++          roomKey,
++          fileIds,
++        );
+       },
+       saveFiles: async ({ addedFiles }) => {
+         const { roomId, roomKey } = this.portal;
+@@ -159,18 +158,20 @@ class Collab extends PureComponent<CollabProps, CollabState> {
+           throw new AbortError();
+         }
+ 
+-        const { savedFiles, erroredFiles } = await saveFilesToFirebase({
+-          prefix: `${FIREBASE_STORAGE_PREFIXES.collabFiles}/${roomId}`,
+-          files: await encodeFilesForUpload({
+-            files: addedFiles,
+-            encryptionKey: roomKey,
+-            maxBytes: FILE_UPLOAD_MAX_BYTES,
+-          }),
+-        });
++        const storageBackend = await getStorageBackend();
++        const { savedFiles, erroredFiles } =
++          await storageBackend.saveFilesToStorageBackend({
++            prefix: `${FIREBASE_STORAGE_PREFIXES.collabFiles}/${roomId}`,
++            files: await encodeFilesForUpload({
++              files: addedFiles,
++              encryptionKey: roomKey,
++              maxBytes: FILE_UPLOAD_MAX_BYTES,
++            }),
++          });
+ 
+         return {
+           savedFiles: savedFiles.reduce(
+-            (acc: Map<FileId, BinaryFileData>, id) => {
++            (acc: Map<FileId, BinaryFileData>, id: FileId) => {
+               const fileData = addedFiles.get(id);
+               if (fileData) {
+                 acc.set(id, fileData);
+@@ -180,7 +181,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
+             new Map(),
+           ),
+           erroredFiles: erroredFiles.reduce(
+-            (acc: Map<FileId, BinaryFileData>, id) => {
++            (acc: Map<FileId, BinaryFileData>, id: FileId) => {
+               const fileData = addedFiles.get(id);
+               if (fileData) {
+                 acc.set(id, fileData);
+@@ -290,7 +291,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
+     if (
+       this.isCollaborating() &&
+       (this.fileManager.shouldPreventUnload(syncableElements) ||
+-        !isSavedToFirebase(this.portal, syncableElements))
++        !storageBackend?.isSaved(this.portal, syncableElements))
+     ) {
+       // this won't run in time if user decides to leave the site, but
+       //  the purpose is to run in immediately after user decides to stay
+@@ -304,7 +305,8 @@ class Collab extends PureComponent<CollabProps, CollabState> {
+     syncableElements: readonly SyncableExcalidrawElement[],
+   ) => {
+     try {
+-      const storedElements = await saveToFirebase(
++      const storageBackend = await getStorageBackend();
++      const storedElements = await storageBackend.saveToStorageBackend(
+         this.portal,
+         syncableElements,
+         this.excalidrawAPI.getAppState(),
+@@ -703,7 +705,8 @@ class Collab extends PureComponent<CollabProps, CollabState> {
+       this.excalidrawAPI.resetScene();
+ 
+       try {
+-        const elements = await loadFromFirebase(
++        const storageBackend = await getStorageBackend();
++        const elements = await storageBackend.loadFromStorageBackend(
+           roomLinkData.roomId,
+           roomLinkData.roomKey,
+           this.portal.socket,
+diff --git a/excalidraw-app/components/ExportToExcalidrawPlus.tsx b/excalidraw-app/components/ExportToExcalidrawPlus.tsx
+index 782ecd9..812c111 100644
+--- a/excalidraw-app/components/ExportToExcalidrawPlus.tsx
++++ b/excalidraw-app/components/ExportToExcalidrawPlus.tsx
+@@ -2,7 +2,6 @@ import React from "react";
+ import { Card } from "@excalidraw/excalidraw/components/Card";
+ import { ToolButton } from "@excalidraw/excalidraw/components/ToolButton";
+ import { serializeAsJSON } from "@excalidraw/excalidraw/data/json";
+-import { loadFirebaseStorage, saveFilesToFirebase } from "../data/firebase";
+ import type {
+   FileId,
+   NonDeletedExcalidrawElement,
+@@ -21,7 +20,7 @@ import {
+ import { isInitializedImageElement } from "@excalidraw/excalidraw/element/typeChecks";
+ import { FILE_UPLOAD_MAX_BYTES } from "../app_constants";
+ import { encodeFilesForUpload } from "../data/FileManager";
+-import { uploadBytes, ref } from "firebase/storage";
++import { getStorageBackend } from "../data/config";
+ import { MIME_TYPES } from "@excalidraw/excalidraw/constants";
+ import { trackEvent } from "@excalidraw/excalidraw/analytics";
+ import { getFrame } from "@excalidraw/excalidraw/utils";
+@@ -33,10 +32,7 @@ export const exportToExcalidrawPlus = async (
+   files: BinaryFiles,
+   name: string,
+ ) => {
+-  const storage = await loadFirebaseStorage();
+-
+   const id = `${nanoid(12)}`;
+-
+   const encryptionKey = (await generateEncryptionKey())!;
+   const encryptedData = await encryptData(
+     encryptionKey,
+@@ -50,13 +46,8 @@ export const exportToExcalidrawPlus = async (
+     },
+   );
+ 
+-  const storageRef = ref(storage, `/migrations/scenes/${id}`);
+-  await uploadBytes(storageRef, blob, {
+-    customMetadata: {
+-      data: JSON.stringify({ version: 2, name }),
+-      created: Date.now().toString(),
+-    },
+-  });
++  const storageBackend = await getStorageBackend();
++  await storageBackend.saveSceneForMigration(id, name, blob);
+ 
+   const filesMap = new Map<FileId, BinaryFileData>();
+   for (const element of elements) {
+@@ -72,7 +63,8 @@ export const exportToExcalidrawPlus = async (
+       maxBytes: FILE_UPLOAD_MAX_BYTES,
+     });
+ 
+-    await saveFilesToFirebase({
++    const storageBackend = await getStorageBackend();
++    await storageBackend.saveFilesToStorageBackend({
+       prefix: `/migrations/files/scenes/${id}`,
+       files: filesToUpload,
+     });
+diff --git a/excalidraw-app/data/StorageBackend.ts b/excalidraw-app/data/StorageBackend.ts
+new file mode 100644
+index 0000000..8cb652f
+--- /dev/null
++++ b/excalidraw-app/data/StorageBackend.ts
+@@ -0,0 +1,51 @@
++import type { SyncableExcalidrawElement } from ".";
++import type {
++  ExcalidrawElement,
++  FileId,
++} from "@excalidraw/excalidraw/element/types";
++import type { AppState, BinaryFileData } from "@excalidraw/excalidraw/types";
++import type Portal from "../collab/Portal";
++import type { Socket } from "socket.io-client";
++
++export interface StorageBackend {
++  isSaved: (portal: Portal, elements: readonly ExcalidrawElement[]) => boolean;
++  saveToStorageBackend: (
++    portal: Portal,
++    elements: readonly SyncableExcalidrawElement[],
++    appState: AppState,
++  ) => Promise<any>;
++  loadFromStorageBackend: (
++    roomId: string,
++    roomKey: string,
++    socket: Socket | null,
++  ) => Promise<readonly SyncableExcalidrawElement[] | null>;
++  saveFilesToStorageBackend: ({
++    prefix,
++    files,
++  }: {
++    prefix: string;
++    files: {
++      id: FileId;
++      buffer: Uint8Array;
++    }[];
++  }) => Promise<any>;
++  loadFilesFromStorageBackend: (
++    prefix: string,
++    decryptionKey: string,
++    filesIds: readonly FileId[],
++  ) => Promise<{
++    loadedFiles: BinaryFileData[];
++    erroredFiles: Map<FileId, true>;
++  }>;
++  saveSceneForMigration: (
++    id: string,
++    name: string,
++    data: Blob,
++  ) => Promise<void>;
++}
++
++export interface StoredScene {
++  sceneVersion: number;
++  iv: Uint8Array;
++  ciphertext: ArrayBuffer;
++}
+diff --git a/excalidraw-app/data/config.ts b/excalidraw-app/data/config.ts
+new file mode 100644
+index 0000000..6627dbd
+--- /dev/null
++++ b/excalidraw-app/data/config.ts
+@@ -0,0 +1,75 @@
++import {
++  isSavedToFirebase,
++  loadFilesFromFirebase,
++  loadFromFirebase,
++  saveFilesToFirebase,
++  saveSceneToFirebaseForMigration,
++  saveToFirebase,
++} from "./firebase";
++import {
++  isSavedToHttpStorage,
++  loadFilesFromHttpStorage,
++  loadFromHttpStorage,
++  saveFilesToHttpStorage,
++  saveSceneForMigration as saveSceneToHttpStorageForMigration,
++  saveToHttpStorage,
++} from "./httpStorage";
++import type { StorageBackend } from "./StorageBackend";
++
++const firebaseStorage: StorageBackend = {
++  isSaved: isSavedToFirebase,
++  saveToStorageBackend: async (portal, elements, appState) => {
++    // saveToFirebase returns either null or stored elements array; adapt to interface
++    const res = await saveToFirebase(portal, elements, appState);
++    if (!res) {
++      return false;
++    }
++    return { reconciledElements: res };
++  },
++  loadFromStorageBackend: loadFromFirebase,
++  saveFilesToStorageBackend: async ({ prefix, files }) => {
++    // saveFilesToFirebase returns arrays; convert to Maps per interface
++    const { savedFiles, erroredFiles } = await saveFilesToFirebase({
++      prefix,
++      files,
++    });
++    return {
++      savedFiles: new Map(savedFiles.map((id) => [id, true] as const)),
++      erroredFiles: new Map(erroredFiles.map((id) => [id, true] as const)),
++    };
++  },
++  loadFilesFromStorageBackend: loadFilesFromFirebase,
++  saveSceneForMigration: saveSceneToFirebaseForMigration,
++};
++
++const httpStorage: StorageBackend = {
++  isSaved: isSavedToHttpStorage,
++  saveToStorageBackend: saveToHttpStorage,
++  loadFromStorageBackend: loadFromHttpStorage,
++  saveFilesToStorageBackend: saveFilesToHttpStorage,
++  loadFilesFromStorageBackend: loadFilesFromHttpStorage,
++  saveSceneForMigration: saveSceneToHttpStorageForMigration,
++};
++
++const storageBackends = new Map<string, StorageBackend>()
++  .set("firebase", firebaseStorage)
++  .set("http", httpStorage);
++
++export let storageBackend: StorageBackend | null = null;
++
++export async function getStorageBackend() {
++  if (storageBackend) {
++    return storageBackend;
++  }
++
++  const storageBackendName = import.meta.env.VITE_APP_STORAGE_BACKEND || "";
++
++  if (storageBackends.has(storageBackendName)) {
++    storageBackend = storageBackends.get(storageBackendName) as StorageBackend;
++  } else {
++    console.warn("No storage backend found, default to firebase");
++    storageBackend = firebaseStorage;
++  }
++
++  return storageBackend;
++}
+diff --git a/excalidraw-app/data/firebase.ts b/excalidraw-app/data/firebase.ts
+index a871b48..77a3e1a 100644
+--- a/excalidraw-app/data/firebase.ts
++++ b/excalidraw-app/data/firebase.ts
+@@ -86,7 +86,7 @@ type FirebaseStoredScene = {
+   ciphertext: Bytes;
+ };
+ 
+-const encryptElements = async (
++export const encryptElements = async (
+   key: string,
+   elements: readonly ExcalidrawElement[],
+ ): Promise<{ ciphertext: ArrayBuffer; iv: Uint8Array }> => {
+@@ -97,7 +97,7 @@ const encryptElements = async (
+   return { ciphertext: encryptedBuffer, iv };
+ };
+ 
+-const decryptElements = async (
++export const decryptElements = async (
+   data: FirebaseStoredScene,
+   roomKey: string,
+ ): Promise<readonly ExcalidrawElement[]> => {
+@@ -311,3 +311,18 @@ export const loadFilesFromFirebase = async (
+ 
+   return { loadedFiles, erroredFiles };
+ };
++
++export const saveSceneToFirebaseForMigration = async (
++  id: string,
++  name: string,
++  data: Blob,
++) => {
++  const storage = await loadFirebaseStorage();
++  const storageRef = ref(storage, `/migrations/scenes/${id}`);
++  await uploadBytes(storageRef, data, {
++    customMetadata: {
++      data: JSON.stringify({ version: 2, name }),
++      created: Date.now().toString(),
++    },
++  });
++};
+diff --git a/excalidraw-app/data/httpStorage.ts b/excalidraw-app/data/httpStorage.ts
+new file mode 100644
+index 0000000..c73d015
+--- /dev/null
++++ b/excalidraw-app/data/httpStorage.ts
+@@ -0,0 +1,311 @@
++// Inspired and partly copied from https://gitlab.com/kiliandeca/excalidraw-fork
++// MIT, Kilian Decaderincourt
++
++import type { SyncableExcalidrawElement } from ".";
++import { getSyncableElements } from ".";
++import { MIME_TYPES } from "@excalidraw/excalidraw/constants";
++import { decompressData } from "@excalidraw/excalidraw/data/encode";
++import {
++  encryptData,
++  IV_LENGTH_BYTES,
++} from "@excalidraw/excalidraw/data/encryption";
++import { restoreElements } from "@excalidraw/excalidraw/data/restore";
++import { getSceneVersion } from "@excalidraw/excalidraw/element";
++import type {
++  ExcalidrawElement,
++  FileId,
++} from "@excalidraw/excalidraw/element/types";
++import type { OrderedExcalidrawElement } from "@excalidraw/excalidraw/element/types";
++import type {
++  AppState,
++  BinaryFileData,
++  BinaryFileMetadata,
++  DataURL,
++} from "@excalidraw/excalidraw/types";
++import type Portal from "../collab/Portal";
++import { reconcileElements } from "@excalidraw/excalidraw";
++import type { RemoteExcalidrawElement } from "@excalidraw/excalidraw/data/reconcile";
++import { decryptData } from "@excalidraw/excalidraw/data/encryption";
++import type { StoredScene } from "./StorageBackend";
++import type { Socket } from "socket.io-client";
++
++const HTTP_STORAGE_BACKEND_URL = import.meta.env
++  .VITE_APP_HTTP_STORAGE_BACKEND_URL;
++const SCENE_VERSION_LENGTH_BYTES = 4;
++
++// There is a lot of intentional duplication with the firebase file
++// to prevent modifying upstream files and ease futur maintenance of this fork
++
++const httpStorageSceneVersionCache = new WeakMap<Socket, number>();
++
++export const isSavedToHttpStorage = (
++  portal: Portal,
++  elements: readonly ExcalidrawElement[],
++): boolean => {
++  if (portal.socket && portal.roomId && portal.roomKey) {
++    const sceneVersion = getSceneVersion(elements);
++
++    return httpStorageSceneVersionCache.get(portal.socket) === sceneVersion;
++  }
++  // if no room exists, consider the room saved so that we don't unnecessarily
++  // prevent unload (there's nothing we could do at that point anyway)
++  return true;
++};
++
++export const saveToHttpStorage = async (
++  portal: Portal,
++  elements: readonly SyncableExcalidrawElement[],
++  appState: AppState,
++) => {
++  const { roomId, roomKey, socket } = portal;
++  if (
++    // if no room exists, consider the room saved because there's nothing we can
++    // do at this point
++    !roomId ||
++    !roomKey ||
++    !socket ||
++    isSavedToHttpStorage(portal, elements)
++  ) {
++    return false;
++  }
++
++  const sceneVersion = getSceneVersion(elements);
++  const getResponse = await fetch(
++    `${HTTP_STORAGE_BACKEND_URL}/rooms/${roomId}`,
++  );
++
++  if (!getResponse.ok && getResponse.status !== 404) {
++    return false;
++  }
++  if (getResponse.status === 404) {
++    const result: boolean = await saveElementsToBackend(
++      roomKey,
++      roomId,
++      [...elements],
++      sceneVersion,
++    );
++    if (result) {
++      httpStorageSceneVersionCache.set(socket, sceneVersion);
++      return elements; // saved new room, return elements as stored
++    }
++    return false;
++  }
++  // If room already exist, we compare scene versions to check
++  // if we're up to date before saving our scene
++  const buffer = await getResponse.arrayBuffer();
++  const sceneVersionFromRequest = parseSceneVersionFromRequest(buffer);
++  if (sceneVersionFromRequest >= sceneVersion) {
++    return false;
++  }
++
++  const existingElements = await getElementsFromBuffer(buffer, roomKey);
++  const reconciledElements = getSyncableElements(
++    reconcileElements(
++      elements,
++      existingElements as OrderedExcalidrawElement[] as RemoteExcalidrawElement[],
++      appState,
++    ),
++  );
++
++  const result: boolean = await saveElementsToBackend(
++    roomKey,
++    roomId,
++    reconciledElements,
++    sceneVersion,
++  );
++
++  if (result) {
++    httpStorageSceneVersionCache.set(socket, sceneVersion);
++    return reconciledElements as readonly ExcalidrawElement[];
++  }
++  return false;
++};
++
++export const loadFromHttpStorage = async (
++  roomId: string,
++  roomKey: string,
++  socket: Socket | null,
++): Promise<readonly SyncableExcalidrawElement[] | null> => {
++  const getResponse = await fetch(
++    `${HTTP_STORAGE_BACKEND_URL}/rooms/${roomId}`,
++  );
++
++  if (!getResponse.ok) {
++    return null;
++  }
++
++  const buffer = await getResponse.arrayBuffer();
++  if (!buffer.byteLength) {
++    return null;
++  }
++  const elements = await getElementsFromBuffer(buffer, roomKey);
++
++  if (socket) {
++    httpStorageSceneVersionCache.set(socket, getSceneVersion(elements));
++  }
++
++  return getSyncableElements(restoreElements(elements, null));
++};
++
++const getElementsFromBuffer = async (
++  buffer: ArrayBuffer,
++  key: string,
++): Promise<readonly ExcalidrawElement[]> => {
++  // Buffer should contain both the IV (fixed length) and encrypted data
++  const sceneVersion = parseSceneVersionFromRequest(buffer);
++  const iv = new Uint8Array(
++    buffer.slice(
++      SCENE_VERSION_LENGTH_BYTES,
++      IV_LENGTH_BYTES + SCENE_VERSION_LENGTH_BYTES,
++    ),
++  );
++  const encrypted = buffer.slice(
++    IV_LENGTH_BYTES + SCENE_VERSION_LENGTH_BYTES,
++    buffer.byteLength,
++  );
++
++  return await decryptElements(
++    { sceneVersion, ciphertext: encrypted, iv },
++    key,
++  );
++};
++
++export const saveFilesToHttpStorage = async ({
++  prefix,
++  files,
++}: {
++  prefix: string;
++  files: { id: FileId; buffer: Uint8Array }[];
++}) => {
++  const erroredFiles: FileId[] = [];
++  const savedFiles: FileId[] = [];
++
++  // prevent unused param warning
++  void prefix;
++  await Promise.all(
++    files.map(async ({ id, buffer }) => {
++      try {
++        const payloadBlob = new Blob([buffer]);
++        const payload = await new Response(payloadBlob).arrayBuffer();
++        await fetch(`${HTTP_STORAGE_BACKEND_URL}/files/${id}`, {
++          method: "PUT",
++          body: payload,
++        });
++        savedFiles.push(id);
++      } catch (error: any) {
++        erroredFiles.push(id);
++      }
++    }),
++  );
++
++  return { savedFiles, erroredFiles };
++};
++
++export const loadFilesFromHttpStorage = async (
++  prefix: string,
++  decryptionKey: string,
++  filesIds: readonly FileId[],
++) => {
++  const loadedFiles: BinaryFileData[] = [];
++  const erroredFiles = new Map<FileId, true>();
++
++  //////////////
++  await Promise.all(
++    [...new Set(filesIds)].map(async (id) => {
++      // prevent unused param warning
++      void prefix;
++      try {
++        const response = await fetch(`${HTTP_STORAGE_BACKEND_URL}/files/${id}`);
++        if (response.status < 400) {
++          const arrayBuffer = await response.arrayBuffer();
++
++          const { data, metadata } = await decompressData<BinaryFileMetadata>(
++            new Uint8Array(arrayBuffer),
++            {
++              decryptionKey,
++            },
++          );
++
++          const dataURL = new TextDecoder().decode(data) as DataURL;
++
++          loadedFiles.push({
++            mimeType: metadata.mimeType || MIME_TYPES.binary,
++            id,
++            dataURL,
++            created: metadata?.created || Date.now(),
++          });
++        } else {
++          erroredFiles.set(id, true);
++        }
++      } catch (error: any) {
++        erroredFiles.set(id, true);
++        console.error(error);
++      }
++    }),
++  );
++  //////
++
++  return { loadedFiles, erroredFiles };
++};
++
++export const saveSceneForMigration = async () => {
++  // http storage doesn't support this
++  console.error("Saving scene for migration is not supported in httpStorage");
++};
++
++const saveElementsToBackend = async (
++  roomKey: string,
++  roomId: string,
++  elements: SyncableExcalidrawElement[],
++  sceneVersion: number,
++) => {
++  const { ciphertext, iv } = await encryptElements(roomKey, elements);
++
++  // Concatenate Scene Version, IV with encrypted data (IV does not have to be secret).
++  const numberBuffer = new ArrayBuffer(4);
++  const numberView = new DataView(numberBuffer);
++  numberView.setUint32(0, sceneVersion, false);
++  const sceneVersionBuffer = numberView.buffer;
++  const payloadBlob = await new Response(
++    new Blob([sceneVersionBuffer, iv.buffer, ciphertext]),
++  ).arrayBuffer();
++  const putResponse = await fetch(
++    `${HTTP_STORAGE_BACKEND_URL}/rooms/${roomId}`,
++    {
++      method: "PUT",
++      body: payloadBlob,
++    },
++  );
++
++  return putResponse.ok;
++};
++
++const parseSceneVersionFromRequest = (buffer: ArrayBuffer) => {
++  const view = new DataView(buffer);
++  return view.getUint32(0, false);
++};
++
++const decryptElements = async (
++  data: StoredScene,
++  roomKey: string,
++): Promise<readonly ExcalidrawElement[]> => {
++  const ciphertext = data.ciphertext;
++  const iv = data.iv;
++
++  const decrypted = await decryptData(iv, ciphertext, roomKey);
++  const decodedData = new TextDecoder("utf-8").decode(
++    new Uint8Array(decrypted),
++  );
++  return JSON.parse(decodedData);
++};
++
++const encryptElements = async (
++  key: string,
++  elements: readonly ExcalidrawElement[],
++): Promise<{ ciphertext: ArrayBuffer; iv: Uint8Array }> => {
++  const json = JSON.stringify(elements);
++  const encoded = new TextEncoder().encode(json);
++  const { encryptedBuffer, iv } = await encryptData(key, encoded);
++
++  return { ciphertext: encryptedBuffer, iv };
++};
+diff --git a/excalidraw-app/data/index.ts b/excalidraw-app/data/index.ts
+index 6ecb98f..d37c2cf 100644
+--- a/excalidraw-app/data/index.ts
++++ b/excalidraw-app/data/index.ts
+@@ -34,8 +34,8 @@ import {
+   FILE_UPLOAD_MAX_BYTES,
+   ROOM_ID_BYTES,
+ } from "../app_constants";
++import { getStorageBackend } from "./config";
+ import { encodeFilesForUpload } from "./FileManager";
+-import { saveFilesToFirebase } from "./firebase";
+ 
+ export type SyncableExcalidrawElement = OrderedExcalidrawElement &
+   MakeBrand<"SyncableExcalidrawElement">;
+@@ -316,7 +316,8 @@ export const exportToBackend = async (
+       url.hash = `json=${json.id},${encryptionKey}`;
+       const urlString = url.toString();
+ 
+-      await saveFilesToFirebase({
++      const storageBackend = await getStorageBackend();
++      await storageBackend.saveFilesToStorageBackend({
+         prefix: `/files/shareLinks/${json.id}`,
+         files: filesToUpload,
+       });
+diff --git a/excalidraw-app/env.ts b/excalidraw-app/env.ts
+new file mode 100644
+index 0000000..3124fb0
+--- /dev/null
++++ b/excalidraw-app/env.ts
+@@ -0,0 +1,5 @@
++if (typeof window !== "undefined") {
++  window._env_ = window._env_ || {};
++}
++
++export {};
+diff --git a/excalidraw-app/index.html b/excalidraw-app/index.html
+index 750824c..33dba6f 100644
+--- a/excalidraw-app/index.html
++++ b/excalidraw-app/index.html
+@@ -214,7 +214,9 @@
+     </header>
+     <div id="root"></div>
+     <script type="module" src="index.tsx"></script>
+-    <% if (typeof PROD != 'undefined' && PROD == true) { %>
++    <% if (typeof PROD != 'undefined' && PROD == true &&
++    typeof VITE_APP_ENABLE_TRACKING != 'undefined' &&
++    VITE_APP_ENABLE_TRACKING == true) { %>
+     <!-- 100% privacy friendly analytics -->
+     <script>
+       // need to load this script dynamically bcs. of iframe embed tracking
+diff --git a/excalidraw-app/index.tsx b/excalidraw-app/index.tsx
+index a28bd9e..2cc1c19 100644
+--- a/excalidraw-app/index.tsx
++++ b/excalidraw-app/index.tsx
+@@ -1,3 +1,5 @@
++import "./env";
++
+ import { StrictMode } from "react";
+ import { createRoot } from "react-dom/client";
+ import ExcalidrawApp from "./App";
+diff --git a/excalidraw-app/package.json b/excalidraw-app/package.json
+index e5dcde0..8d5a066 100644
+--- a/excalidraw-app/package.json
++++ b/excalidraw-app/package.json
+@@ -23,7 +23,7 @@
+     ]
+   },
+   "engines": {
+-    "node": "18.0.0 - 22.x.x"
++    "node": ">=18.0.0"
+   },
+   "dependencies": {
+     "@excalidraw/random-username": "1.0.0",
+diff --git a/excalidraw-app/tests/collab.test.tsx b/excalidraw-app/tests/collab.test.tsx
+index 80cf4b0..e1c0231 100644
+--- a/excalidraw-app/tests/collab.test.tsx
++++ b/excalidraw-app/tests/collab.test.tsx
+@@ -26,6 +26,7 @@ vi.mock("../../excalidraw-app/data/firebase.ts", () => {
+   const loadFromFirebase = async () => null;
+   const saveToFirebase = () => {};
+   const isSavedToFirebase = () => true;
++  const saveSceneToFirebaseForMigration = () => {};
+   const loadFilesFromFirebase = async () => ({
+     loadedFiles: [],
+     erroredFiles: [],
+@@ -41,6 +42,7 @@ vi.mock("../../excalidraw-app/data/firebase.ts", () => {
+     isSavedToFirebase,
+     loadFilesFromFirebase,
+     saveFilesToFirebase,
++    saveSceneToFirebaseForMigration,
+   };
+ });
+ 
+diff --git a/package.json b/package.json
+index da54728..19bae0a 100644
+--- a/package.json
++++ b/package.json
+@@ -44,7 +44,7 @@
+     "vitest-canvas-mock": "0.3.3"
+   },
+   "engines": {
+-    "node": "18.0.0 - 22.x.x"
++    "node": ">=18.0.0"
+   },
+   "homepage": ".",
+   "prettier": "@excalidraw/prettier-config",
+diff --git a/packages/excalidraw/env.ts b/packages/excalidraw/env.ts
+new file mode 100644
+index 0000000..3124fb0
+--- /dev/null
++++ b/packages/excalidraw/env.ts
+@@ -0,0 +1,5 @@
++if (typeof window !== "undefined") {
++  window._env_ = window._env_ || {};
++}
++
++export {};
+diff --git a/packages/excalidraw/global.d.ts b/packages/excalidraw/global.d.ts
+index 2072657..d92b5b6 100644
+--- a/packages/excalidraw/global.d.ts
++++ b/packages/excalidraw/global.d.ts
+@@ -1,5 +1,7 @@
+ interface Window {
+   ClipboardItem: any;
++  // alswl: patch using window._env_
++  _env_: any | undefined;
+   __EXCALIDRAW_SHA__: string | undefined;
+   EXCALIDRAW_ASSET_PATH: string | string[] | undefined;
+   EXCALIDRAW_EXPORT_SOURCE: string;
+diff --git a/packages/excalidraw/index.tsx b/packages/excalidraw/index.tsx
+index b4b8574..1c3b945 100644
+--- a/packages/excalidraw/index.tsx
++++ b/packages/excalidraw/index.tsx
+@@ -1,3 +1,5 @@
++import "./env";
++
+ import React, { useEffect } from "react";
+ import { InitializeApp } from "./components/InitializeApp";
+ import App from "./components/App";

@@ -149,6 +149,50 @@ docker compose up -d
       the self-hosted app — it opens cleanly.
 - [ ] `docker compose restart` preserves DNS, certificates, links, and images.
 
+## Building the frontend from source (customization)
+
+The default `frontend` is a prebuilt image. To own the code instead,
+`docker-compose.build.yml` compiles the frontend from upstream
+`excalidraw/excalidraw` (pinned tag) with the vendored
+`frontend/excalidraw-selfhost.patch` applied — the same ~800-line patch the
+prebuilt image carries: it swaps Firebase for the HTTP storage backend and
+makes env vars runtime-injected (`window._env_` + `launcher.py`) instead of
+build-time baked.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+or add `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` to `.env`
+to make it the default mode.
+
+### Graduating to your own fork
+
+When you want real customizations (custom tools, Discord export, …):
+
+1. Fork `excalidraw/excalidraw` on GitHub.
+2. Seed it with the patch:
+
+   ```bash
+   git clone https://github.com/astromarb/excalidraw.git
+   cd excalidraw
+   git checkout -b selfhost v0.18.1
+   git apply ../excalidraw-selfhosted/frontend/excalidraw-selfhost.patch
+   git add -A && git commit -m "Self-host patch: HTTP storage backend + runtime env"
+   git push -u origin selfhost
+   ```
+
+3. Point the build at the fork — in `.env`:
+
+   ```
+   EXCALIDRAW_REPO=https://github.com/astromarb/excalidraw.git
+   EXCALIDRAW_REF=selfhost
+   ```
+
+   Customizations are then normal commits on `selfhost`; rebuild with
+   `docker compose up -d --build frontend`. Upstream updates:
+   `git fetch upstream && git rebase <new-release-tag>`.
+
 ## Operations
 
 ```bash
