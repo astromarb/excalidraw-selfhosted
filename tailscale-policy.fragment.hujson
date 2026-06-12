@@ -1,0 +1,32 @@
+{
+  // Merge these entries into the existing tailnet policy. Do not replace the
+  // current policy wholesale; grants are additive and existing broad grants
+  // must be narrowed separately if they include invited users.
+  "groups": {
+    "group:trusted": [
+      "astromarb@github"
+    ],
+    "group:excalidraw-users": [
+      // Add invited Tailscale login identities here.
+    ]
+  },
+
+  "tagOwners": {
+    "tag:excalidraw": [
+      "group:trusted"
+    ]
+  },
+
+  "grants": [
+    {
+      "src": ["group:trusted"],
+      "dst": ["*"],
+      "ip": ["*"]
+    },
+    {
+      "src": ["group:excalidraw-users"],
+      "dst": ["tag:excalidraw"],
+      "ip": ["tcp:443", "tcp:53", "udp:53"]
+    }
+  ]
+}
