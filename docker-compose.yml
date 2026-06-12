@@ -1,9 +1,6 @@
 services:
-  # App-level Tailscale node: the stack joins the tailnet as its own machine
-  # (e.g. excalidraw.<tailnet>.ts.net) with HTTPS via the bundled serve
-  # config. Share THIS node with friends — not the host PC. Node identity
-  # persists in the tailscale-state volume, so it survives restarts and
-  # migrates with the volume.
+  # App-level Tailscale node. The persisted identity keeps the application
+  # isolated from the Docker host and gives the stack a stable private IP.
   tailscale:
     image: tailscale/tailscale:latest
     hostname: ${TS_HOSTNAME:-excalidraw}
@@ -12,15 +9,59 @@ services:
       - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/serve.json
+      - TS_USERSPACE=false
+      - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun:/dev/net/tun
     volumes:
       - tailscale-state:/var/lib/tailscale
       - ./tailscale-serve.json:/config/serve.json:ro
+      - tailscale-socket:/var/run/tailscale
     ports:
       - "${GATEWAY_PORT:-8080}:80"   # plain-HTTP access from the host for local testing
 
-  # Single entrypoint for the whole stack. nginx shares the Tailscale node's
-  # network namespace, so the serve config reaches it at 127.0.0.1:80 and the
-  # published port above is actually nginx.
+  # Caddy terminates TLS for both the custom hostname and the legacy ts.net
+  # hostname. It shares the sidecar namespace, so only the Tailscale node owns
+  # ports 53/443 and the Docker host remains unexposed.
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    restart: unless-stopped
+    network_mode: service:tailscale
+    environment:
+      - PUBLIC_ORIGIN=${PUBLIC_ORIGIN}
+      - LEGACY_ORIGIN=${LEGACY_ORIGIN}
+      - ACME_CA=${ACME_CA}
+      - ACME_EMAIL=${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${ACMEDNS_CONFIG_FILE:-./secrets/acmedns.json}:/run/secrets/acmedns.json:ro
+      - tailscale-socket:/var/run/tailscale
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - tailscale
+      - gateway
+
+  # Split-DNS resolver for the single private application hostname.
+  coredns:
+    image: coredns/coredns:1.12.1
+    restart: unless-stopped
+    network_mode: service:tailscale
+    command: -conf /etc/coredns/Corefile
+    environment:
+      - TS_IPV4=${TS_IPV4}
+      - TS_IPV6=${TS_IPV6}
+    volumes:
+      - ./Corefile:/etc/coredns/Corefile:ro
+    depends_on:
+      - tailscale
+
+  # Internal HTTP gateway for the whole stack.
   gateway:
     image: nginx:1.27-alpine
     restart: unless-stopped
@@ -74,3 +115,6 @@ services:
 volumes:
   redis-data:
   tailscale-state:
+  tailscale-socket:
+  caddy-data:
+  caddy-config:

@@ -1,27 +1,26 @@
 # Excalidraw, self-hosted
 
-Private Excalidraw with **live collaboration** and **persistent shared links**,
-served over **Tailscale** — no domain, no public exposure, $0/month.
+Private Excalidraw with **live collaboration**, **persistent shared links**,
+and a split-DNS custom domain. Public visitors see a landing page; authorized
+tailnet members reach the application at the same URL.
 
 ## Architecture
 
 One `docker compose` stack. A **Tailscale sidecar** joins the tailnet as its
-own machine (`excalidraw.<tailnet>.ts.net`), terminates HTTPS with an
-auto-provisioned `*.ts.net` cert, and hands requests to nginx:
+own machine. CoreDNS supplies the private DNS answer and Caddy terminates HTTPS
+for both the custom hostname and the legacy `*.ts.net` hostname:
 
 ```
-browser ──HTTPS──> tailscale sidecar (its own tailnet node) ──> nginx gateway
-                                          ├── /            → frontend   (alswl/excalidraw — Excalidraw with HTTP-storage patch)
-                                          ├── /socket.io/  → room       (excalidraw/excalidraw-room — collab websocket relay)
-                                          └── /api/v2/     → storage    (excalidraw-storage-backend) ──> redis (volume: redis-data)
+tailnet DNS ──> CoreDNS ──> 100.105.138.9
+browser ──HTTPS──> Caddy ──> nginx gateway
+                              ├── /            → frontend
+                              ├── /socket.io/  → room
+                              └── /api/v2/     → storage ──> Redis
 ```
 
-Because the app is its own tailnet machine, you share *the app* with friends —
-not the host PC. The node's identity lives in the `tailscale-state` volume, so
-restarts and host migrations don't change the URL or require re-sharing. The
-host needs no Tailscale configuration at all (it doesn't even need Tailscale
-installed for the stack to work — only for *you* to reach it from the host
-over the tailnet; `http://localhost:8080` works regardless).
+Because the app is its own tailnet machine, collaborators can be granted only
+TCP 443 and TCP/UDP 53 on this node. They receive no access to the Docker host,
+other containers, other tailnet devices, SSH, or subnet routes.
 
 - **frontend** — prebuilt image of Excalidraw with the small patch that swaps
   Firebase for an HTTP storage backend. Later (Phase 3+) this can be replaced
@@ -32,43 +31,74 @@ over the tailnet; `http://localhost:8080` works regardless).
 - **storage** — persists shared scenes, shareable links, and pasted images
   into Redis (`redis-data` volume — this is the only state worth backing up).
 
-## Setup (~15 min)
+## One-time setup
 
-Prereqs (one-time, tailnet-wide, at https://login.tailscale.com/admin/dns):
-**MagicDNS** on, **HTTPS Certificates** on.
+### 1. ACME-DNS delegation
 
-1. Generate an auth key at
-   https://login.tailscale.com/admin/settings/keys → *Generate auth key*
-   (defaults are fine; it's only used for the first join).
-2. Configure and start:
+Register a dedicated ACME-DNS account:
 
-   ```bash
-   git clone https://github.com/astromarb/excalidraw-selfhosted.git
-   cd excalidraw-selfhosted
-   cp .env.example .env
-   # edit .env: paste TS_AUTHKEY, set PUBLIC_ORIGIN to
-   # https://excalidraw.<your-tailnet>.ts.net
-   docker compose up -d
-   docker compose logs tailscale | tail   # should show it joining the tailnet
-   ```
+```bash
+curl -X POST https://auth.acme-dns.io/register
+```
 
-3. The `excalidraw` machine appears in the
-   [admin console](https://login.tailscale.com/admin/machines) — open it and
-   **disable key expiry** so it never drops off the tailnet.
-4. Open `https://excalidraw.<tailnet>.ts.net` from any of your Tailscale
-   devices (the very first HTTPS request can take ~30 s while the cert is
-   provisioned). For a quick host-local sanity check without Tailscale,
-   http://localhost:8080 serves the same app.
+Copy the response into `secrets/acmedns.json` using
+`secrets/acmedns.example.json` as the shape. In Wix DNS, create:
 
-## Share with friends
+```text
+Type:   CNAME
+Host:   _acme-challenge.excalidraw
+Value:  <fulldomain returned by ACME-DNS>
+```
 
-1. Each friend creates a free Tailscale account and installs the client.
-2. In the [admin console](https://login.tailscale.com/admin/machines), open
-   the **excalidraw** machine (not the host PC) → **Share** → send each friend
-   the invite link.
-3. They accept; the node appears in their tailnet and the same
-   `https://excalidraw.<tailnet>.ts.net` URL works for them. They can reach
-   the whiteboard and nothing else on your network.
+### 2. Public landing page
+
+Deploy `landing/` as a Vercel project. Add
+`excalidraw.marvinlopezacevedo.com` to that project, then create the CNAME
+Vercel provides in Wix. This is the public DNS answer.
+
+### 3. Tailscale DNS and policy
+
+Keep MagicDNS and HTTPS certificates enabled. In the DNS admin page, add a
+restricted nameserver:
+
+```text
+Domain:      excalidraw.marvinlopezacevedo.com
+Nameserver:  100.105.138.9
+```
+
+Merge `tailscale-policy.fragment.hujson` into the existing policy. Add invited
+login identities to `group:excalidraw-users`, narrow any existing broad member
+grant that includes them, and authorize `tag:excalidraw`.
+
+After the policy accepts the tag, set:
+
+```dotenv
+TS_EXTRA_ARGS=--advertise-tags=tag:excalidraw
+```
+
+### 4. Start the stack
+
+```bash
+cp .env.example .env
+# Preserve the existing TS_AUTHKEY and persisted tailscale-state volume.
+# Set ACME_EMAIL and verify all hostname/IP values.
+docker compose config
+docker compose build caddy
+docker compose up -d
+```
+
+Initially leave `ACME_CA` on Let's Encrypt staging. After HTTPS and DNS tests
+pass, change it to:
+
+```dotenv
+ACME_CA=https://acme-v02.api.letsencrypt.org/directory
+```
+
+Then recreate Caddy:
+
+```bash
+docker compose up -d --force-recreate caddy
+```
 
 To collaborate: open the app → **Share** → **Start session** → send the link
 (keep the part after `#` intact — that's the encryption key).
@@ -99,6 +129,12 @@ docker compose up -d
 
 ## Verification checklist
 
+- [ ] With Tailscale off, the custom hostname shows the Vercel landing page.
+- [ ] With Tailscale on, DNS returns `100.105.138.9`.
+- [ ] The custom hostname has a trusted production certificate.
+- [ ] The legacy `*.ts.net` URL redirects to the custom hostname.
+- [ ] Collaborators can reach only TCP 443 and TCP/UDP 53 on the app node.
+- [ ] Collaborators cannot reach the host, SSH, port 80/8080, or other nodes.
 - [ ] App loads at `PUBLIC_ORIGIN`; drawing works.
 - [ ] **Live collab**: Share → Start session in browser A; open the link in
       browser B (or a friend's machine) — cursors and edits sync both ways.
@@ -111,8 +147,7 @@ docker compose up -d
 - [ ] **Obsidian round-trip**: export a drawing as `.excalidraw`, open it in
       Obsidian's Excalidraw plugin, edit, save, and drag the file back into
       the self-hosted app — it opens cleanly.
-- [ ] **Privacy**: the `ts.net` URL is unreachable without Tailscale
-      (e.g. from a phone on cellular with Tailscale off).
+- [ ] `docker compose restart` preserves DNS, certificates, links, and images.
 
 ## Operations
 
@@ -123,15 +158,6 @@ docker run --rm -v excalidraw-selfhosted_redis-data:/data -v "$PWD":/backup alpi
   tar czf /backup/redis-data-$(date +%F).tgz -C /data .   # backup
 ```
 
-Pinned versions: `alswl/excalidraw:v0.18.1-fork-b2` (Excalidraw 0.18.1),
-`alswl/excalidraw-storage-backend:v2023.11.11`, `excalidraw/excalidraw-room:latest`,
-`tailscale/tailscale:latest`.
-
-## Alternative: host-level `tailscale serve`
-
-If you'd rather not run the sidecar, the host's own Tailscale can front the
-stack instead: remove the `tailscale` service and `network_mode` line, put
-`ports: ["8080:80"]` back on `gateway`, and run
-`tailscale serve --bg --https=443 http://127.0.0.1:8080` on the host. The app
-is then served at the *host's* ts.net name, and sharing it with friends means
-sharing your whole machine — the sidecar setup is preferred.
+Pinned versions include `caddy:2.10.0`, `coredns:1.12.1`,
+`alswl/excalidraw:v0.18.1-fork-b2`, and
+`alswl/excalidraw-storage-backend:v2023.11.11`.

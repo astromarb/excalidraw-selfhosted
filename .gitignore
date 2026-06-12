@@ -1,2 +1,6 @@
 .env
 redis-data*.tgz
+secrets/*
+!secrets/.gitkeep
+!secrets/acmedns.example.json
+.vercel/

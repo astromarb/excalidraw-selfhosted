@@ -1,0 +1,18 @@
+{
+	email {$ACME_EMAIL}
+	auto_https disable_redirects
+}
+
+{$PUBLIC_ORIGIN} {
+	tls {
+		ca {$ACME_CA}
+		dns acmedns /run/secrets/acmedns.json
+		resolvers 1.1.1.1 8.8.8.8
+	}
+
+	reverse_proxy 127.0.0.1:80
+}
+
+{$LEGACY_ORIGIN} {
+	redir {$PUBLIC_ORIGIN}{uri} permanent
+}
