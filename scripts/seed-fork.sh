@@ -1,7 +1,8 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Seed astromarb/excalidraw with the self-host patch as a `selfhost` branch.
 # Run once from the root of excalidraw-selfhosted:
-#   bash scripts/seed-fork.sh
+#   sh scripts/seed-fork.sh        (PowerShell / Windows)
+#   bash scripts/seed-fork.sh      (Linux / macOS / WSL with bash)
 #
 # After this:
 # - astromarb/excalidraw@selfhost has upstream v0.18.1 + the self-host patch
@@ -11,7 +12,7 @@
 #   future customizations are commits on selfhost, not patch-file edits.
 # - Upstream updates: git fetch upstream && git rebase v<new-tag> on selfhost.
 
-set -euo pipefail
+set -eu
 
 FORK="https://github.com/astromarb/excalidraw.git"
 UPSTREAM_TAG="v0.18.1"
