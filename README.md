@@ -140,6 +140,12 @@ its boards to *Ungrouped*; deleting a board removes only the dashboard entry
 Metadata lives in the `boards-data` volume (a small JSON file). Board
 *content* rides the normal collab/storage pipeline, encrypted in Redis.
 
+Navigation back from the canvas: the self-host patch adds a **Boards** entry
+to the app's hamburger menu and welcome screen. This is frontend source code,
+so it only appears when the frontend is built from source (see *Building the
+frontend from source* below) — the prebuilt `alswl` image doesn't have it,
+though `/boards` itself works either way.
+
 Privacy note: for dashboard boards, the room encryption key is stored in
 `boards-data` so boards are reopenable by name. That's the point of a shared
 dashboard — but it means these boards are only as private as the dashboard
@@ -176,10 +182,10 @@ secrecy as before.
 The default `frontend` is a prebuilt image. To own the code instead,
 `docker-compose.build.yml` compiles the frontend from upstream
 `excalidraw/excalidraw` (pinned tag) with the vendored
-`frontend/excalidraw-selfhost.patch` applied — the same ~800-line patch the
-prebuilt image carries: it swaps Firebase for the HTTP storage backend and
-makes env vars runtime-injected (`window._env_` + `launcher.py`) instead of
-build-time baked.
+`frontend/excalidraw-selfhost.patch` applied. The patch swaps Firebase for
+the HTTP storage backend, makes env vars runtime-injected (`window._env_` +
+`launcher.py`) instead of build-time baked, and adds the **Boards** menu/
+welcome-screen links — the first selfhost-only UI customization.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
