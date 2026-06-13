@@ -82,6 +82,8 @@ services:
   frontend:
     image: alswl/excalidraw:v0.18.1-fork-b2
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1 || exit 1"]
     environment:
       - VITE_APP_BACKEND_V2_GET_URL=${PUBLIC_ORIGIN}/api/v2/scenes/
       - VITE_APP_BACKEND_V2_POST_URL=${PUBLIC_ORIGIN}/api/v2/scenes/
