@@ -18,7 +18,15 @@ FORK="https://github.com/astromarb/excalidraw.git"
 UPSTREAM_TAG="v0.18.1"
 BRANCH="selfhost"
 PATCH="$(cd "$(dirname "$0")/.." && pwd)/frontend/excalidraw-selfhost.patch"
+
+if git ls-remote --exit-code "$FORK" "refs/heads/$BRANCH" >/dev/null 2>&1; then
+    echo "astromarb/excalidraw@$BRANCH already exists; nothing to seed."
+    echo "Build with: docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build"
+    exit 0
+fi
+
 WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
 
 echo "==> Cloning upstream at $UPSTREAM_TAG into $WORK ..."
 # Force LF checkout so the patch (LF) matches the working tree on Windows.
@@ -58,4 +66,3 @@ git push fork "$BRANCH"
 echo ""
 echo "Done. astromarb/excalidraw@selfhost is ready."
 echo "Build with: docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build"
-cd / && rm -rf "$WORK"
