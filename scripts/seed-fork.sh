@@ -21,7 +21,9 @@ PATCH="$(cd "$(dirname "$0")/.." && pwd)/frontend/excalidraw-selfhost.patch"
 WORK=$(mktemp -d)
 
 echo "==> Cloning upstream at $UPSTREAM_TAG into $WORK ..."
+# Force LF checkout so the patch (LF) matches the working tree on Windows.
 git clone --depth 1 --branch "$UPSTREAM_TAG" \
+    -c core.autocrlf=false \
     https://github.com/excalidraw/excalidraw.git "$WORK"
 
 cd "$WORK"
@@ -33,7 +35,7 @@ echo "==> Creating $BRANCH branch off $UPSTREAM_TAG ..."
 git checkout -b "$BRANCH"
 
 echo "==> Applying self-host patch ..."
-git apply "$PATCH"
+git apply --ignore-whitespace "$PATCH"
 
 git add -A
 git -c user.name="Marvin Lopez Acevedo" \
