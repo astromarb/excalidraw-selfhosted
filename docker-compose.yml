@@ -73,6 +73,7 @@ services:
       - frontend
       - room
       - storage
+      - boards
 
   # Excalidraw frontend with the HTTP-storage patch (Firebase swapped out).
   # alswl's fork tracks upstream releases; the env vars below are substituted
@@ -105,6 +106,15 @@ services:
       - GLOBAL_PREFIX=/api/v2
       - STORAGE_URI=redis://redis:6379
 
+  # Boards dashboard: named, grouped, persistent shared whiteboards at
+  # /boards. Metadata (names, groups, room links) lives in boards-data;
+  # board content rides the normal room/storage pipeline.
+  boards:
+    build: ./boards
+    restart: unless-stopped
+    volumes:
+      - boards-data:/data
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -114,6 +124,7 @@ services:
 
 volumes:
   redis-data:
+  boards-data:
   tailscale-state:
   tailscale-socket:
   caddy-data:

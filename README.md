@@ -105,27 +105,46 @@ To collaborate: open the app → **Share** → **Start session** → send the li
 
 ## Migrate to the Mac mini
 
-All state lives in two volumes: `redis-data` (scenes/links/images) and
-`tailscale-state` (the node's tailnet identity). Move both and the new host
-serves the **same URL with the same shares** — friends notice nothing.
+All state lives in three volumes: `redis-data` (scenes/links/images),
+`tailscale-state` (the node's tailnet identity), and `boards-data` (the
+boards dashboard). Move them and the new host serves the **same URL with the
+same shares** — friends notice nothing.
 
 ```bash
 # on the OMEN PC
 docker compose down
-for v in redis-data tailscale-state; do
+for v in redis-data tailscale-state boards-data; do
   docker run --rm -v excalidraw-selfhosted_$v:/data -v "$PWD":/backup alpine \
     tar czf /backup/$v.tgz -C /data .
 done
 
 # on the Mac mini (after copying the .tgz files and your .env over)
 git clone https://github.com/astromarb/excalidraw-selfhosted.git && cd excalidraw-selfhosted
-for v in redis-data tailscale-state; do
+for v in redis-data tailscale-state boards-data; do
   docker volume create excalidraw-selfhosted_$v
   docker run --rm -v excalidraw-selfhosted_$v:/data -v "$PWD":/backup alpine \
     tar xzf /backup/$v.tgz -C /data
 done
 docker compose up -d
 ```
+
+## Boards dashboard
+
+`/boards` is a homepage for **named, grouped, persistent shared whiteboards**.
+Creating a board mints a regular Excalidraw collab-room link and remembers it
+by name, so any device with access can reopen the same board later — no more
+bookkeeping room URLs by hand. Groups organize boards; deleting a group moves
+its boards to *Ungrouped*; deleting a board removes only the dashboard entry
+(the drawing stays reachable for anyone who kept the link).
+
+Metadata lives in the `boards-data` volume (a small JSON file). Board
+*content* rides the normal collab/storage pipeline, encrypted in Redis.
+
+Privacy note: for dashboard boards, the room encryption key is stored in
+`boards-data` so boards are reopenable by name. That's the point of a shared
+dashboard — but it means these boards are only as private as the dashboard
+itself. Ad-hoc sessions started from inside the app keep full end-to-end
+secrecy as before.
 
 ## Verification checklist
 
@@ -144,6 +163,9 @@ docker compose up -d
       still there.
 - [ ] **Persistence**: `docker compose restart` — previously exported links
       still resolve.
+- [ ] **Boards dashboard**: create a group and a board at `/boards`, draw in
+      it, close the tab, reopen the board from the dashboard on another
+      device — same content; `docker compose restart boards` keeps the list.
 - [ ] **Obsidian round-trip**: export a drawing as `.excalidraw`, open it in
       Obsidian's Excalidraw plugin, edit, save, and drag the file back into
       the self-hosted app — it opens cleanly.

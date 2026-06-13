@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Boards</title>
+<style>
+  :root {
+    --bg: #121212; --panel: #1e1e1e; --panel-2: #2a2a2e;
+    --text: #e3e3e8; --muted: #9b9ba1; --accent: #6965db; --accent-2: #8783e3;
+    --danger: #d66; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 14px;
+    padding: 28px 32px 10px;
+  }
+  header h1 { font-size: 22px; margin: 0; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { padding: 8px 32px 60px; max-width: 1080px; }
+  .toolbar { display: flex; gap: 10px; margin: 14px 0 26px; flex-wrap: wrap; }
+  input, select {
+    background: var(--panel); color: var(--text);
+    border: 1px solid #333; border-radius: var(--radius); padding: 8px 12px;
+    font: inherit;
+  }
+  input:focus, select:focus { outline: 1px solid var(--accent); }
+  button {
+    background: var(--accent); color: #fff; border: 0; cursor: pointer;
+    border-radius: var(--radius); padding: 8px 14px; font: inherit;
+  }
+  button:hover { background: var(--accent-2); }
+  button.ghost {
+    background: transparent; color: var(--muted);
+    border: 1px solid #333; padding: 4px 9px; font-size: 12.5px;
+  }
+  button.ghost:hover { color: var(--text); border-color: #555; }
+  button.ghost.danger:hover { color: var(--danger); border-color: var(--danger); }
+  section.group { margin-bottom: 30px; }
+  .group-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .group-head h2 { font-size: 15px; margin: 0; color: var(--accent-2); letter-spacing: .3px; }
+  .group-head .count { color: var(--muted); font-size: 12.5px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--panel); border: 1px solid #2c2c30; border-radius: var(--radius);
+    padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 8px;
+    transition: border-color .15s;
+  }
+  .card:hover { border-color: var(--accent); }
+  .card a.name {
+    color: var(--text); text-decoration: none; font-weight: 600; font-size: 15.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .card a.name:hover { color: var(--accent-2); }
+  .card .meta { color: var(--muted); font-size: 12px; }
+  .card .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .empty { color: var(--muted); font-size: 13.5px; padding: 6px 2px; }
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--panel-2); border: 1px solid #3a3a40; border-radius: var(--radius);
+    padding: 9px 16px; font-size: 13.5px; opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Boards</h1>
+  <span class="sub">shared whiteboards — anyone with access can open, edit, and collaborate live</span>
+</header>
+<main>
+  <div class="toolbar">
+    <input id="board-name" placeholder="New board name…" />
+    <select id="board-group"></select>
+    <button id="create-board">Create board</button>
+    <span style="flex:1"></span>
+    <input id="group-name" placeholder="New group name…" />
+    <button id="create-group">Create group</button>
+  </div>
+  <div id="groups"></div>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+let state = { groups: [], boards: [] };
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok && res.status !== 204) throw new Error((await res.json()).error || res.statusText);
+  return res.status === 204 ? null : res.json();
+}
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 1800);
+}
+
+function boardURL(board) {
+  return location.origin + "/" + board.room;
+}
+
+function groupSelectOptions(selected) {
+  const opts = [`<option value="" ${!selected ? "selected" : ""}>No group</option>`];
+  for (const g of state.groups) {
+    opts.push(`<option value="${g.id}" ${selected === g.id ? "selected" : ""}>${esc(g.name)}</option>`);
+  }
+  return opts.join("");
+}
+
+function esc(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function cardHTML(b) {
+  const created = new Date(b.createdAt).toLocaleDateString();
+  return `<div class="card" data-id="${b.id}">
+    <a class="name" href="${boardURL(b)}" title="${esc(b.name)}">${esc(b.name)}</a>
+    <div class="meta">created ${created}</div>
+    <div class="actions">
+      <button class="ghost" data-act="copy">Copy link</button>
+      <button class="ghost" data-act="rename">Rename</button>
+      <select class="ghost" data-act="move" title="Move to group">${groupSelectOptions(b.groupId)}</select>
+      <button class="ghost danger" data-act="delete">Delete</button>
+    </div>
+  </div>`;
+}
+
+function render() {
+  $("#board-group").innerHTML = groupSelectOptions(null);
+  const sections = [];
+  const ungrouped = state.boards.filter((b) => !b.groupId);
+  for (const g of state.groups) {
+    const boards = state.boards.filter((b) => b.groupId === g.id);
+    sections.push(`<section class="group" data-gid="${g.id}">
+      <div class="group-head">
+        <h2>${esc(g.name)}</h2><span class="count">${boards.length}</span>
+        <button class="ghost" data-act="rename-group">Rename</button>
+        <button class="ghost danger" data-act="delete-group">Delete group</button>
+      </div>
+      ${boards.length ? `<div class="grid">${boards.map(cardHTML).join("")}</div>` : `<div class="empty">No boards yet.</div>`}
+    </section>`);
+  }
+  sections.push(`<section class="group">
+    <div class="group-head"><h2>Ungrouped</h2><span class="count">${ungrouped.length}</span></div>
+    ${ungrouped.length ? `<div class="grid">${ungrouped.map(cardHTML).join("")}</div>` : `<div class="empty">No boards here. Create one above.</div>`}
+  </section>`);
+  $("#groups").innerHTML = sections.join("");
+}
+
+async function refresh() {
+  state = await api("GET", "/boards/api/state");
+  render();
+}
+
+$("#create-board").onclick = async () => {
+  const name = $("#board-name").value.trim();
+  if (!name) return toast("Give the board a name first");
+  const groupId = $("#board-group").value || null;
+  const board = await api("POST", "/boards/api/boards", { name, groupId });
+  $("#board-name").value = "";
+  await refresh();
+  toast("Board created");
+  location.href = boardURL(board);
+};
+
+$("#create-group").onclick = async () => {
+  const name = $("#group-name").value.trim();
+  if (!name) return toast("Give the group a name first");
+  await api("POST", "/boards/api/groups", { name });
+  $("#group-name").value = "";
+  await refresh();
+};
+
+$("#groups").addEventListener("click", async (e) => {
+  const act = e.target.dataset.act;
+  if (!act) return;
+  const card = e.target.closest(".card");
+  const section = e.target.closest("section.group");
+  if (act === "copy") {
+    const b = state.boards.find((x) => x.id === card.dataset.id);
+    try {
+      await navigator.clipboard.writeText(boardURL(b));
+      toast("Link copied");
+    } catch {
+      prompt("Copy the board link:", boardURL(b));
+    }
+  } else if (act === "rename") {
+    const b = state.boards.find((x) => x.id === card.dataset.id);
+    const name = prompt("Rename board:", b.name);
+    if (name && name.trim()) { await api("PATCH", `/boards/api/boards/${b.id}`, { name }); refresh(); }
+  } else if (act === "delete") {
+    const b = state.boards.find((x) => x.id === card.dataset.id);
+    if (confirm(`Delete board "${b.name}" from the dashboard?\n(The drawing itself stays available to anyone who kept the link.)`)) {
+      await api("DELETE", `/boards/api/boards/${b.id}`);
+      refresh();
+    }
+  } else if (act === "rename-group") {
+    const g = state.groups.find((x) => x.id === section.dataset.gid);
+    const name = prompt("Rename group:", g.name);
+    if (name && name.trim()) { await api("PATCH", `/boards/api/groups/${g.id}`, { name }); refresh(); }
+  } else if (act === "delete-group") {
+    const g = state.groups.find((x) => x.id === section.dataset.gid);
+    if (confirm(`Delete group "${g.name}"? Its boards move to Ungrouped.`)) {
+      await api("DELETE", `/boards/api/groups/${g.id}`);
+      refresh();
+    }
+  }
+});
+
+$("#groups").addEventListener("change", async (e) => {
+  if (e.target.dataset.act !== "move") return;
+  const card = e.target.closest(".card");
+  await api("PATCH", `/boards/api/boards/${card.dataset.id}`, { groupId: e.target.value || null });
+  refresh();
+});
+
+refresh();
+</script>
+</body>
+</html>
