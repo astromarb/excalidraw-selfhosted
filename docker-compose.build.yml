@@ -5,17 +5,19 @@
 # or make it permanent by adding to .env:
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml
 #
-# By default this builds upstream excalidraw/excalidraw at a pinned tag with
-# frontend/excalidraw-selfhost.patch applied. Once you have your own fork
-# carrying the patch (plus your customizations) as commits, point the args at
-# it in .env:
-#   EXCALIDRAW_REPO=https://github.com/astromarb/excalidraw.git
-#   EXCALIDRAW_REF=selfhost
+# Defaults point at astromarb/excalidraw@selfhost — the fork carrying the
+# self-host patch as commits. Seed it first if the selfhost branch doesn't
+# exist yet:
+#   scripts/seed-fork.sh
+#
+# To temporarily fall back to upstream + vendored patch instead:
+#   EXCALIDRAW_REPO=https://github.com/excalidraw/excalidraw.git
+#   EXCALIDRAW_REF=v0.18.1
 services:
   frontend:
     image: excalidraw-frontend:selfhost
     build:
       context: ./frontend
       args:
-        EXCALIDRAW_REPO: ${EXCALIDRAW_REPO:-https://github.com/excalidraw/excalidraw.git}
-        EXCALIDRAW_REF: ${EXCALIDRAW_REF:-v0.18.1}
+        EXCALIDRAW_REPO: ${EXCALIDRAW_REPO:-https://github.com/astromarb/excalidraw.git}
+        EXCALIDRAW_REF: ${EXCALIDRAW_REF:-selfhost}
